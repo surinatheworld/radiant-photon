@@ -104,6 +104,7 @@ export class Player {
         this.prevSpace = false;
         this.jumpCooldown = 0;
         this.maxHookDistance = 80.0;
+        this.prevVelocity = new THREE.Vector3(); // Track previous velocity for wall detection
     }
 
     setupInput() {
@@ -292,6 +293,23 @@ export class Player {
             const boostForce = 2.0;
             this.body.applyImpulse({ x: camDir.x * boostForce, y: camDir.y * boostForce, z: camDir.z * boostForce }, true);
         }
+
+        // Wall Collision Detection (like Naraka Bladepoint)
+        // When grappling, if velocity suddenly drops (hit wall), detach hooks
+        const currentVel = new THREE.Vector3(linvel.x, linvel.y, linvel.z);
+        const isHooked = this.hooks.left.state === 'ATTACHED' || this.hooks.right.state === 'ATTACHED';
+
+        if (isHooked && this.prevVelocity.length() > 5) { // Only check if moving fast
+            const velChange = this.prevVelocity.length() - currentVel.length();
+
+            // If velocity dropped significantly (hit obstacle)
+            if (velChange > 8) {
+                this.clearHook('left');
+                this.clearHook('right');
+                console.log('Wall impact - hooks detached');
+            }
+        }
+        this.prevVelocity.copy(currentVel);
 
         // Hook Physics
         const playerPos = this.body.translation();
