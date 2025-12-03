@@ -66,8 +66,8 @@ async function init() {
 
     // Scroll to Zoom
     document.addEventListener('wheel', (event) => {
-        cameraDistance += event.deltaY * 0.01;
-        cameraDistance = Math.max(2, Math.min(10, cameraDistance));
+        cameraDistance += event.deltaY * 0.005; // Reduced sensitivity
+        cameraDistance = Math.max(2, Math.min(20, cameraDistance)); // Increased max distance to 20
     });
 
     // Resize Handler
