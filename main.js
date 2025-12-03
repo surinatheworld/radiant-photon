@@ -1,144 +1,113 @@
 import * as THREE from 'three';
-import { initPhysics, stepPhysics, world, rapier } from './src/physics.js';
+import { initPhysics, world, rapier } from './src/physics.js';
 import { Player } from './src/player.js';
-
-// Scene setup
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb); // Sky blue
-
-// Camera setup
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-
-// Camera control variables
-let cameraAngleX = 0; // Pitch (up/down)
-let cameraAngleY = 0; // Yaw (left/right)
-let cameraDistance = 10;
-
-document.addEventListener('click', () => {
-    document.body.requestPointerLock();
-});
-
-document.addEventListener('mousemove', (event) => {
-    if (document.pointerLockElement === document.body) {
-        // Reverting to standard look: Mouse Right -> Look Right -> Camera moves Left
-        cameraAngleY -= event.movementX * 0.002;
-
-        // Reverting/Inverting Pitch: Mouse Up -> Look Up -> Camera moves Down
-        cameraAngleX += event.movementY * 0.002;
-
-        // Clamp pitch to avoid Gimbal Lock (and going underground)
-        // Limit from slightly below ground to almost top-down
-        cameraAngleX = Math.max(-0.1, Math.min(Math.PI / 2 - 0.1, cameraAngleX));
-    }
-});
-
-document.addEventListener('wheel', (event) => {
-    if (document.pointerLockElement === document.body) {
-        cameraDistance += event.deltaY * 0.01;
-        cameraDistance = Math.max(2, Math.min(20, cameraDistance));
-    }
-});
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-document.body.appendChild(renderer.domElement);
-
-// Lighting
-const ambientLight = new THREE.AmbientLight(0x404040);
-scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-dirLight.position.set(10, 20, 10);
-dirLight.castShadow = true;
-scene.add(dirLight);
-
-// Floor
-let floorBody;
-function createFloor() {
-    // Visual
-    const geometry = new THREE.BoxGeometry(50, 1, 50);
-    const material = new THREE.MeshStandardMaterial({ color: 0x333333 });
-    const floorMesh = new THREE.Mesh(geometry, material);
-    floorMesh.position.y = -0.5;
-    floorMesh.receiveShadow = true;
-    scene.add(floorMesh);
-
-    // Physics
-    let groundBodyDesc = rapier.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0);
-    floorBody = world.createRigidBody(groundBodyDesc);
-    let groundColliderDesc = rapier.ColliderDesc.cuboid(25, 0.5, 25)
-        .setCollisionGroups(0x0004FFFF); // Membership: Group 2, Filter: All
-    world.createCollider(groundColliderDesc, floorBody);
-}
-
-function createObstacles() {
-    const boxGeo = new THREE.BoxGeometry(2, 10, 2);
-    const boxMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
-
-    for (let i = 0; i < 10; i++) {
-        const x = (Math.random() - 0.5) * 40;
-        const z = (Math.random() - 0.5) * 40;
-
-        // Visual
-        const mesh = new THREE.Mesh(boxGeo, boxMat);
-        mesh.position.set(x, 5, z);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        scene.add(mesh);
-
-        // Physics
-        let bodyDesc = rapier.RigidBodyDesc.fixed().setTranslation(x, 5, z);
-        let body = world.createRigidBody(bodyDesc);
-        let colliderDesc = rapier.ColliderDesc.cuboid(1, 5, 1)
-            .setCollisionGroups(0x0002FFFF); // Membership: Group 1, Filter: All
-        world.createCollider(colliderDesc, body);
-    }
-}
-
-let player;
+import { City } from './src/city.js';
 
 async function init() {
     await initPhysics();
-    createFloor();
-    createObstacles();
-    player = new Player(scene);
+
+    // 1. Setup Scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB); // Sky Blue
+    // Add Fog to hide render distance limits
+    scene.fog = new THREE.Fog(0x87CEEB, 50, 200);
+
+    // 2. Setup Camera
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 10);
+
+    // 3. Setup Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // 4. Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(50, 100, 50);
+    dirLight.castShadow = true;
+    dirLight.shadow.camera.top = 100;
+    dirLight.shadow.camera.bottom = -100;
+    dirLight.shadow.camera.left = -100;
+    dirLight.shadow.camera.right = 100;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    scene.add(dirLight);
+
+    // 5. Create World (City)
+    const city = new City(scene);
+
+    // 6. Create Player
+    const player = new Player(scene);
+
+    // Camera Control Variables
+    let cameraAngleX = 0;
+    let cameraAngleY = 0;
+    const sensitivity = 0.002;
+    let cameraDistance = 5; // Default distance
+
+    // Pointer Lock
+    document.body.addEventListener('click', () => {
+        document.body.requestPointerLock();
+    });
+
+    document.addEventListener('mousemove', (event) => {
+        if (document.pointerLockElement === document.body) {
+            cameraAngleX -= event.movementX * sensitivity;
+            cameraAngleY -= event.movementY * sensitivity;
+
+            // Clamp pitch
+            cameraAngleY = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, cameraAngleY));
+        }
+    });
+
+    // Scroll to Zoom
+    document.addEventListener('wheel', (event) => {
+        cameraDistance += event.deltaY * 0.01;
+        cameraDistance = Math.max(2, Math.min(10, cameraDistance));
+    });
+
+    // Resize Handler
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        world.step();
+        player.update(camera);
+
+        // Camera Follow Logic (Orbit around Player)
+        if (player.mesh) {
+            const playerPos = player.mesh.position.clone();
+            // Aim slightly above player head
+            const targetPos = playerPos.add(new THREE.Vector3(0, 1.5, 0));
+
+            // Calculate camera position based on angles
+            const offset = new THREE.Vector3(
+                0,
+                0,
+                cameraDistance
+            );
+
+            // Apply rotations
+            offset.applyAxisAngle(new THREE.Vector3(1, 0, 0), cameraAngleY);
+            offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraAngleX);
+
+            camera.position.copy(targetPos).add(offset);
+            camera.lookAt(targetPos);
+        }
+
+        renderer.render(scene, camera);
+    }
 
     animate();
 }
 
-// Animation loop
-function animate() {
-    requestAnimationFrame(animate);
-
-    stepPhysics();
-
-    if (player) {
-        player.update(camera);
-
-        // Orbit Camera Logic
-        const playerPos = player.mesh.position;
-
-        // Calculate camera position based on angles
-        // We want cameraAngleY = 0 to be behind the player (assuming player faces -Z)
-        // If AngleY increases (Mouse Right -> Camera Right), we move to +X.
-        // x = sin(angle)
-        // z = cos(angle)
-        const cx = playerPos.x + cameraDistance * Math.sin(cameraAngleY) * Math.cos(cameraAngleX);
-        const cy = playerPos.y + cameraDistance * Math.sin(cameraAngleX); // Height depends on Pitch
-        const cz = playerPos.z + cameraDistance * Math.cos(cameraAngleY) * Math.cos(cameraAngleX);
-
-        camera.position.set(cx, cy, cz);
-        camera.lookAt(playerPos.x, playerPos.y + 1, playerPos.z); // Look slightly above player center
-    }
-
-    renderer.render(scene, camera);
-}
-
 init();
-
-// Handle window resize
-window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-});

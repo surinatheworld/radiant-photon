@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { rapier, world } from './physics.js';
 
 export class Player {
@@ -6,17 +7,125 @@ export class Player {
         this.scene = scene;
         this.mesh = null;
         this.body = null;
+        this.mixer = null; // Animation Mixer
+        this.animations = []; // Store animations
 
         this.init();
     }
 
     init() {
-        // 1. Create Visual Mesh (Capsule)
-        const geometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
-        const material = new THREE.MeshStandardMaterial({ color: 0x00aaff });
-        this.mesh = new THREE.Mesh(geometry, material);
-        this.mesh.castShadow = true;
-        this.scene.add(this.mesh);
+        // Create a temporary placeholder mesh until model loads to avoid errors in update()
+        if (!this.mesh) {
+            const geometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
+            // Yellow = Loading
+            const material = new THREE.MeshStandardMaterial({ color: 0xffff00, transparent: true, opacity: 0.5 });
+            this.mesh = new THREE.Mesh(geometry, material);
+            this.scene.add(this.mesh);
+        }
+
+        // 1. Load Visual Mesh (FBX)
+        const loader = new FBXLoader();
+        // Use BASE_URL to handle deployment path correctly
+        // Remove trailing slash from BASE_URL if present to avoid double slash, though usually fine
+        const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+        const modelPath = `${baseUrl}player.fbx`;
+        console.log('Loading model from:', modelPath);
+
+        loader.load(modelPath, (object) => {
+            console.log('FBX Loaded', object);
+            // Try Scale 1.0 first (Maybe it's already in meters?)
+            // object.scale.set(0.01, 0.01, 0.01); 
+            object.scale.set(0.01, 0.01, 0.01); // Keep 0.01 for now, but we will check size
+
+            object.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+
+            object.position.y = -1.0;
+            // Fix Orientation: User said it faces backwards. 
+            // Previously was Math.PI (180 deg). Let's try 0.
+            object.rotation.y = 0;
+
+            // Debug: Bounding Box
+            const box = new THREE.Box3().setFromObject(object);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+
+            // Auto-scale logic: If too huge (> 5m height), scale down. If too small (< 0.5m), scale up.
+            if (size.y > 5.0) {
+                const scaleFactor = 2.0 / size.y; // Target 2m height
+                object.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            } else if (size.y < 0.5) {
+                const scaleFactor = 2.0 / size.y;
+                object.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            }
+
+            // Re-measure after scaling
+            const box2 = new THREE.Box3().setFromObject(object);
+            const size2 = new THREE.Vector3();
+            box2.getSize(size2);
+
+            // Remove placeholder if it exists
+            if (this.mesh && this.mesh.geometry.type === 'CapsuleGeometry') {
+                this.scene.remove(this.mesh);
+                // Important: Update reference!
+                this.mesh = new THREE.Group();
+                this.mesh.add(object);
+                this.scene.add(this.mesh);
+            } else if (this.mesh) {
+                // If mesh is already a Group (re-load?), just add to it?
+                // Simpler: Just replace.
+                this.scene.remove(this.mesh);
+                this.mesh = new THREE.Group();
+                this.mesh.add(object);
+                this.scene.add(this.mesh);
+            }
+
+            // Add BoxHelper to visualize
+            const boxHelper = new THREE.BoxHelper(object, 0xffff00);
+            this.scene.add(boxHelper);
+
+            // Animation Setup
+            this.mixer = new THREE.AnimationMixer(object);
+            this.animations = object.animations; // Store animations
+
+            // Play first animation if exists (Test)
+            if (this.animations && this.animations.length > 0) {
+                const action = this.mixer.clipAction(this.animations[0]);
+                action.play();
+            }
+
+            const log = document.getElementById('debug-log');
+            if (log) {
+                const animCount = this.animations ? this.animations.length : 0;
+                log.innerText = `Model Loaded! H: ${size2.y.toFixed(2)}m | Anims: ${animCount}`;
+            }
+
+        }, (xhr) => {
+            const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+            const log = document.getElementById('debug-log');
+            // Only update if not loaded yet
+            if (log && !log.innerText.includes('Loaded!')) {
+                log.innerText = `Loading Model: ${percent}%`;
+            }
+        }, (error) => {
+            console.error('An error happened loading the model:', error);
+            const log = document.getElementById('debug-log');
+            // Try to extract more info
+            let msg = error.message || 'Unknown Error';
+            if (error.target && error.target.status) {
+                msg = `HTTP ${error.target.status} ${error.target.statusText}`;
+            }
+            if (log) log.innerText = `Error: ${msg}`;
+
+            // Change placeholder to Red on error
+            if (this.mesh && this.mesh.material) {
+                this.mesh.material.color.setHex(0xff0000); // Red
+            }
+        });
 
         // 2. Create Physics Body
         // RigidBody: Dynamic (affected by forces)
@@ -55,6 +164,8 @@ export class Player {
         };
         this.aiming = { left: false, right: false };
         this.ropeMaterial = new THREE.LineBasicMaterial({ color: 0x333333, linewidth: 2 });
+        this.prevSpace = false;
+        this.jumpCooldown = 0;
     }
 
     setupInput() {
@@ -183,6 +294,12 @@ export class Player {
             const camDir = new THREE.Vector3();
             camera.getWorldDirection(camDir);
             this.lastCamDir = camDir;
+            const dt = 1 / 60;
+
+            // Update Animation Mixer
+            if (this.mixer) {
+                this.mixer.update(dt);
+            }
 
             // Zoom Logic
             const targetFov = (this.hooks.left.state !== 'IDLE' || this.hooks.right.state !== 'IDLE') ? 60 : 75;
@@ -244,29 +361,69 @@ export class Player {
                 }
             }
 
-            // Jump (Double Jump allowed)
-            // Check ground status every frame to reset jump count
-            const ray = new rapier.Ray(this.body.translation(), { x: 0, y: -1, z: 0 });
-            const hit = world.castRay(ray, 1.1, true);
-            const isGrounded = hit && hit.timeOfImpact < 1.1;
+            // Jump Logic (Strict Ground Only)
+            // Check ground status every frame
+            // Start ray slightly BELOW feet (Center Y - 1.05) to strictly avoid self-collision
+            const origin = this.body.translation();
+            const feetPos = { x: origin.x, y: origin.y - 1.05, z: origin.z };
+            const ray = new rapier.Ray(feetPos, { x: 0, y: -1, z: 0 });
 
-            if (isGrounded) {
-                this.jumpCount = 0;
+            // Cast down short distance (0.5)
+            // Filter: Hit Group 1 (Obstacles) and Group 2 (Ground). Ignore Group 0 (Player).
+            const hit = world.castRay(ray, 0.5, true, 0x00010006);
+
+            // Also check vertical velocity to prevent jumping while moving up
+            const velY = this.body.linvel().y;
+            // Grounded if hit is very close (within 0.1 of feetPos, which is already -1.05)
+            // So total distance from center is 1.15 approx.
+            const isGrounded = hit && hit.timeOfImpact < 0.1 && velY <= 0.1;
+
+            // Visual Debug Ray (Red = Airborne, Green = Grounded)
+            if (!this.debugRay) {
+                const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                const material = new THREE.LineBasicMaterial({ color: 0xff0000 });
+                this.debugRay = new THREE.Line(geometry, material);
+                this.scene.add(this.debugRay);
+            }
+            const rayEnd = new THREE.Vector3(feetPos.x, feetPos.y - 0.5, feetPos.z);
+            const rayStartVec = new THREE.Vector3(feetPos.x, feetPos.y, feetPos.z);
+            const positions = this.debugRay.geometry.attributes.position.array;
+            positions[0] = rayStartVec.x; positions[1] = rayStartVec.y; positions[2] = rayStartVec.z;
+            positions[3] = rayEnd.x; positions[4] = rayEnd.y; positions[5] = rayEnd.z;
+            this.debugRay.geometry.attributes.position.needsUpdate = true;
+            this.debugRay.material.color.setHex(isGrounded ? 0x00ff00 : 0xff0000);
+
+            // Debug Log
+            const log = document.getElementById('debug-log');
+            if (log) {
+                let hitInfo = 'None';
+                if (hit) {
+                    hitInfo = `Dist: ${hit.timeOfImpact.toFixed(2)}`;
+                }
+                log.innerHTML = `
+                    Grounded: ${isGrounded} <br>
+                    RayHit: ${hitInfo} <br>
+                    Vel Y: ${velY.toFixed(2)} <br>
+                    Cooldown: ${this.jumpCooldown > 0 ? this.jumpCooldown.toFixed(2) : 'Ready'}
+                `;
+            }
+
+            // Jump Cooldown
+            if (this.jumpCooldown > 0) {
+                this.jumpCooldown -= dt;
             }
 
             if (this.keys.space) {
-                // Note: Jump no longer clears hooks automatically, allowing for "jump boost" while swinging?
-                // User didn't specify, but usually jump helps detach or boost. 
-                // Let's keep it simple: Jump adds vertical force.
-
-                if (this.jumpCount === undefined) this.jumpCount = 0;
-                if (this.jumpCount < 2) {
-                    const vel = this.body.linvel();
-                    this.body.setLinvel({ x: vel.x, y: 0, z: vel.z }, true);
-                    this.body.applyImpulse({ x: 0, y: jumpForce, z: 0 }, true);
-                    this.jumpCount++;
-                    this.keys.space = false;
+                if (!this.prevSpace) { // On Key Down
+                    if (isGrounded && this.jumpCooldown <= 0) {
+                        const vel = this.body.linvel();
+                        this.body.setLinvel({ x: vel.x, y: jumpForce, z: vel.z }, true);
+                        this.jumpCooldown = 0.5; // 0.5s cooldown
+                    }
                 }
+                this.prevSpace = true;
+            } else {
+                this.prevSpace = false;
             }
 
             // 3. Gas Boost (R)
@@ -283,7 +440,7 @@ export class Player {
             // 4. Hook Physics (Slingshot & Pendulum)
             const playerPos = this.body.translation();
             const playerVec = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
-            const dt = 1 / 60; // Approximate frame time
+            // const dt = 1 / 60; // Already defined above
 
             ['left', 'right'].forEach(side => {
                 const hook = this.hooks[side];
