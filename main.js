@@ -66,8 +66,33 @@ function createFloor() {
     // Physics
     let groundBodyDesc = rapier.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0);
     floorBody = world.createRigidBody(groundBodyDesc);
-    let groundColliderDesc = rapier.ColliderDesc.cuboid(25, 0.5, 25);
+    let groundColliderDesc = rapier.ColliderDesc.cuboid(25, 0.5, 25)
+        .setCollisionGroups(0x0004FFFF); // Membership: Group 2, Filter: All
     world.createCollider(groundColliderDesc, floorBody);
+}
+
+function createObstacles() {
+    const boxGeo = new THREE.BoxGeometry(2, 10, 2);
+    const boxMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+
+    for (let i = 0; i < 10; i++) {
+        const x = (Math.random() - 0.5) * 40;
+        const z = (Math.random() - 0.5) * 40;
+
+        // Visual
+        const mesh = new THREE.Mesh(boxGeo, boxMat);
+        mesh.position.set(x, 5, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+
+        // Physics
+        let bodyDesc = rapier.RigidBodyDesc.fixed().setTranslation(x, 5, z);
+        let body = world.createRigidBody(bodyDesc);
+        let colliderDesc = rapier.ColliderDesc.cuboid(1, 5, 1)
+            .setCollisionGroups(0x0002FFFF); // Membership: Group 1, Filter: All
+        world.createCollider(colliderDesc, body);
+    }
 }
 
 let player;
@@ -75,6 +100,7 @@ let player;
 async function init() {
     await initPhysics();
     createFloor();
+    createObstacles();
     player = new Player(scene);
 
     animate();
