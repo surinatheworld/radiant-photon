@@ -248,7 +248,7 @@ export class City {
                 stepWidth / 2,
                 stepHeight / 2,
                 stepDepth / 2
-            );
+            ).setCollisionGroups(0x0004FFFD); // Group 4, collide with all except Titan (group 2)
             world.createCollider(stepCollider, stepBody);
         }
     }

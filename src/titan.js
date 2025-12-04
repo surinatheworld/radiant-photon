@@ -22,9 +22,10 @@ export class Titan {
         this.isAttacking = false;
         this.attackCooldown = 0;
         this.dotDamageTimer = 0;
+        this.projectiles = []; // Red sphere projectiles
 
         // Danger Zone (red warning circle at Titan's feet)
-        const dangerRadius = 8;
+        const dangerRadius = 16; // Doubled from 8
         const dangerGeo = new THREE.RingGeometry(0.5, dangerRadius, 32);
         const dangerMat = new THREE.MeshBasicMaterial({
             color: 0xff0000,
@@ -144,15 +145,15 @@ export class Titan {
             console.error("❌ Error loading Titan:", err);
         });
 
-        // Physics Body (Dynamic)
-        // Capsule has height=5, radius=2, so we need y + half_height + radius for bottom to be at y=0
+        // Physics Body (Dynamic) - passes through buildings
         const rigidBodyDesc = rapier.RigidBodyDesc.dynamic()
-            .setTranslation(position.x, position.y + 7, position.z) // Raised to 7 so bottom is at y=0
-            .lockRotations(); // Prevent tipping over
+            .setTranslation(position.x, position.y + 7, position.z)
+            .lockRotations();
         this.body = world.createRigidBody(rigidBodyDesc);
 
+        // Only collide with ground (group 2), not buildings
         const colliderDesc = rapier.ColliderDesc.capsule(5, 2)
-            .setCollisionGroups(0x0002FFFF); // Group 2 (Enemy)
+            .setCollisionGroups(0x00020002); // Only collide with ground
         world.createCollider(colliderDesc, this.body);
 
         // Nape (Weak Point)
@@ -194,6 +195,9 @@ export class Titan {
         // Cooldown
         if (this.attackCooldown > 0) this.attackCooldown -= dt;
 
+        // Update projectiles
+        this.updateProjectiles(dt);
+
         // Movement & Attack Logic
         if (this.player && this.player.mesh && this.body) {
             const titanPos = this.body.translation();
@@ -203,15 +207,26 @@ export class Titan {
             const dz = playerPos.z - titanPos.z;
             const dist = Math.sqrt(dx * dx + dz * dz);
 
-            // Rotate to face player
-            const angle = Math.atan2(dx, dz);
-            const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
-            this.mesh.quaternion.slerp(q, 0.1);
+            // Rotate to face player (only when in search range)
+            if (dist < 100) {
+                const angle = Math.atan2(dx, dz);
+                const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+                this.mesh.quaternion.slerp(q, 0.1);
+            }
 
             // Attack range check
-            const attackRange = this.attackRadius; // 10m
+            const attackRange = 30; // Must be within 30m to attack
 
             if (this.isAttacking) {
+                // CANCEL attack if player escaped range!
+                if (dist > attackRange) {
+                    this.isAttacking = false;
+                    this.dangerZone.material.opacity = 0;
+                    this.attackSphereRight.material.opacity = 0;
+                    this.attackSphereLeft.material.opacity = 0;
+                    console.log("🏃 Player escaped! Attack cancelled.");
+                }
+
                 // Must complete attack animation before doing anything else
                 // Stop moving while attacking
                 const currentVel = this.body.linvel();
@@ -247,12 +262,27 @@ export class Titan {
                     // Assume hit is around 40-60% of animation
                     if (time > duration * 0.4 && time < duration * 0.6) {
                         const armRadius = 30.0; // Titan arm reach (matches sphere)
-                        // Arm attack hits players ANYWHERE (even in air)
+
+                        // Hit player
                         if (dist < armRadius) {
                             if (!this.hasHitPlayer) {
                                 this.player.takeDamage(20);
                                 this.hasHitPlayer = true;
-                                console.log("👊 Titan SMASH!");
+                                console.log("👊 Titan SMASH Player!");
+                            }
+                        }
+
+                        // Hit allies too!
+                        if (this.allyTargets) {
+                            const titanPos = this.body.translation();
+                            for (const ally of this.allyTargets) {
+                                const adx = ally.position.x - titanPos.x;
+                                const adz = ally.position.z - titanPos.z;
+                                const allyDist = Math.sqrt(adx * adx + adz * adz);
+                                if (allyDist < 15) { // Allies in range
+                                    ally.userData.hp -= 1;
+                                    console.log("👊 Titan hits Ally! HP:", ally.userData.hp);
+                                }
                             }
                         }
                     }
@@ -265,8 +295,9 @@ export class Titan {
                 this.attackSphereLeft.material.opacity = 0;
                 this.dotDamageTimer = 0;
 
-                const armRadius = 10.0;  // Arm attack range (larger)
-                const footRadius = 5.0;  // Stomp range
+                const armRadius = 10.0;   // Arm attack range
+                const footRadius = 5.0;   // Stomp range
+                const searchRadius = 100; // Vision/search range
 
                 // Check if player is on ground (low Y position relative to titan)
                 const playerY = this.player.mesh.position.y;
@@ -281,25 +312,26 @@ export class Titan {
                 // Arm attack - player within arm reach
                 else if (dist < armRadius && this.attackCooldown <= 0) {
                     this.attack();
-                } else if (dist > armRadius) {
-                    // Chase
-                    const speed = 5.0;
+                    console.log("👊 Titan attacks!");
+                } else if (dist <= searchRadius) {
+                    // Player detected - CHASE!
+                    const speed = dist > armRadius ? 6.0 : 3.0; // Faster when far
                     const dir = new THREE.Vector3(dx, 0, dz).normalize();
                     const currentVel = this.body.linvel();
                     this.body.setLinvel({ x: dir.x * speed, y: currentVel.y, z: dir.z * speed }, true);
 
-                    // Ensure Walk is playing
+                    // Ensure Walk is playing while chasing
                     if (this.animations && this.animations['Walk'] && this.currentAction !== this.animations['Walk']) {
                         if (this.currentAction) this.currentAction.fadeOut(0.2);
                         this.animations['Walk'].reset().fadeIn(0.2).play();
                         this.currentAction = this.animations['Walk'];
                     }
                 } else {
-                    // Close but cooldown -> Stop
+                    // Player OUT OF RANGE - Titan stops and waits (idle)
                     const currentVel = this.body.linvel();
                     this.body.setLinvel({ x: 0, y: currentVel.y, z: 0 }, true);
 
-                    // Stop Walk (Fade out to idle pose if we had one, or just stop)
+                    // Stop walking animation
                     if (this.animations && this.animations['Walk'] && this.currentAction === this.animations['Walk']) {
                         this.animations['Walk'].fadeOut(0.2);
                         this.currentAction = null;
@@ -373,6 +405,69 @@ export class Titan {
             if (this.currentAction) this.currentAction.fadeOut(0.2);
             action.reset().fadeIn(0.2).play();
             this.currentAction = action;
+        }
+
+        // Shoot projectiles toward player
+        if (this.player && this.player.mesh) {
+            this.shootProjectile();
+        }
+    }
+
+    shootProjectile() {
+        const titanPos = this.body.translation();
+
+        for (let i = 0; i < 5; i++) {
+            const sphereGeo = new THREE.SphereGeometry(0.5, 8, 8);
+            const sphereMat = new THREE.MeshBasicMaterial({
+                color: 0xff0000,
+                transparent: true,
+                opacity: 0.9
+            });
+            const projectile = new THREE.Mesh(sphereGeo, sphereMat);
+
+            projectile.position.set(titanPos.x, titanPos.y + 8, titanPos.z);
+
+            const angle = Math.random() * Math.PI * 2;
+            const upAngle = Math.random() * 0.5 + 0.3;
+            const speed = 20 + Math.random() * 15;
+
+            projectile.userData.velocity = new THREE.Vector3(
+                Math.cos(angle) * speed,
+                upAngle * speed,
+                Math.sin(angle) * speed
+            );
+            projectile.userData.life = 4;
+
+            this.scene.add(projectile);
+            this.projectiles.push(projectile);
+        }
+
+        console.log("🔴 5 projectiles launched!");
+    }
+
+    updateProjectiles(dt) {
+        for (let i = this.projectiles.length - 1; i >= 0; i--) {
+            const proj = this.projectiles[i];
+
+            proj.userData.velocity.y -= 15 * dt;
+            proj.position.add(proj.userData.velocity.clone().multiplyScalar(dt));
+
+            proj.userData.life -= dt;
+            if (proj.userData.life <= 0 || proj.position.y < 0) {
+                this.scene.remove(proj);
+                this.projectiles.splice(i, 1);
+                continue;
+            }
+
+            if (this.player && this.player.mesh) {
+                const dist = proj.position.distanceTo(this.player.mesh.position);
+                if (dist < 3) {
+                    this.player.takeDamage(15);
+                    console.log("💥 Projectile hit!");
+                    this.scene.remove(proj);
+                    this.projectiles.splice(i, 1);
+                }
+            }
         }
     }
 

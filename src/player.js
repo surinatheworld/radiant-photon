@@ -136,6 +136,12 @@ export class Player {
         this.currentHealth = 100;
         this.healthBar = document.getElementById('player-health-bar');
         this.updateHealthUI();
+
+        // Mana System
+        this.maxMana = 100;
+        this.currentMana = 100;
+        this.manaRegenRate = 100 / 60; // Full regen in 60 seconds
+        this.createManaUI();
     }
 
     updateHealthUI() {
@@ -156,7 +162,7 @@ export class Player {
     }
 
     setupInput() {
-        this.keys = { w: false, a: false, s: false, d: false, space: false, q: false, e: false, r: false, shift: false };
+        this.keys = { w: false, a: false, s: false, d: false, space: false, q: false, e: false, r: false, shift: false, f: false };
 
         window.addEventListener('keydown', (e) => {
             switch (e.key.toLowerCase()) {
@@ -169,6 +175,7 @@ export class Player {
                 case 'q': if (!this.keys.q) { this.keys.q = true; this.shootHook('right'); } break;
                 case 'e': if (!this.keys.e) { this.keys.e = true; this.shootHook('left'); } break;
                 case 'r': this.keys.r = true; break;
+                case 'f': if (!this.keys.f) { this.keys.f = true; this.healWithMana(); } break;
             }
         });
 
@@ -183,6 +190,7 @@ export class Player {
                 case 'q': this.keys.q = false; break;
                 case 'e': this.keys.e = false; break;
                 case 'r': this.keys.r = false; break;
+                case 'f': this.keys.f = false; break;
             }
         });
 
@@ -535,8 +543,79 @@ export class Player {
             }
         }
 
+        // Mana Regeneration
+        if (this.currentMana < this.maxMana) {
+            this.currentMana = Math.min(this.maxMana, this.currentMana + this.manaRegenRate * dt);
+            this.updateManaUI();
+        }
+
         // Sync mesh
         const position = this.body.translation();
         this.mesh.position.set(position.x, position.y, position.z);
+    }
+
+    createManaUI() {
+        // Mana bar container (below health bar)
+        this.manaBarContainer = document.createElement('div');
+        this.manaBarContainer.style.cssText = `
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            height: 15px;
+            background: #222;
+            border: 2px solid #00ccff;
+            border-radius: 5px;
+            overflow: hidden;
+        `;
+
+        // Mana bar fill
+        this.manaBar = document.createElement('div');
+        this.manaBar.style.cssText = `
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to right, #0066ff, #00ccff);
+            transition: width 0.1s;
+        `;
+        this.manaBarContainer.appendChild(this.manaBar);
+
+        // Label
+        const label = document.createElement('div');
+        label.textContent = 'MANA';
+        label.style.cssText = `
+            position: absolute;
+            top: -18px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #00ccff;
+            font-weight: bold;
+            font-size: 12px;
+        `;
+        this.manaBarContainer.appendChild(label);
+
+        document.body.appendChild(this.manaBarContainer);
+    }
+
+    updateManaUI() {
+        if (this.manaBar) {
+            const percentage = Math.max(0, (this.currentMana / this.maxMana) * 100);
+            this.manaBar.style.width = `${percentage}%`;
+        }
+    }
+
+    healWithMana() {
+        const manaCost = 50; // 50% mana
+        const healAmount = this.maxHealth * 0.1; // Heal 10% HP
+
+        if (this.currentMana >= manaCost) {
+            this.currentMana -= manaCost;
+            this.currentHealth = Math.min(this.maxHealth, this.currentHealth + healAmount);
+            this.updateManaUI();
+            this.updateHealthUI();
+            console.log(`💚 Healed! +${healAmount} HP, -${manaCost} Mana`);
+        } else {
+            console.log("❌ Not enough mana!");
+        }
     }
 }
