@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 
-export const GRAVITY = { x: 0.0, y: -9.81, z: 0.0 };
+export const GRAVITY = { x: 0.0, y: -20.0, z: 0.0 };
 export let world;
 export let rapier;
 

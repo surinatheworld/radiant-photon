@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { initPhysics, world, rapier } from './src/physics.js';
 import { Player } from './src/player.js';
 import { City } from './src/city.js';
+import { Titan } from './src/titan.js';
 
 async function init() {
     await initPhysics();
@@ -10,7 +11,8 @@ async function init() {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87CEEB); // Sky Blue
     // Add Fog to hide render distance limits
-    scene.fog = new THREE.Fog(0x87CEEB, 50, 200);
+    // Add Fog to hide render distance limits - Increased for large city
+    scene.fog = new THREE.Fog(0x87CEEB, 200, 1000);
 
     // 2. Setup Camera
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -40,8 +42,13 @@ async function init() {
     // 5. Create World (City)
     const city = new City(scene);
 
-    // 6. Create Player
-    const player = new Player(scene);
+    // 6. Create Titan (spawn inside wall, closer to center)
+    const titan = new Titan(scene, { x: 30, y: 0, z: 0 });
+
+    // 7. Create Player
+    const player = new Player(scene, { x: 0, y: 10, z: 0 }); // Spawn at center, slightly up
+    player.setTitanTarget(titan); // Pass titan reference to player for testing
+    titan.setPlayerTarget(player); // Pass player reference to titan for chasing
 
     // Camera Control Variables
     let cameraAngleX = 0;
@@ -82,6 +89,7 @@ async function init() {
 
         world.step();
         player.update(camera);
+        titan.update(camera);
 
         // Camera Follow Logic (Orbit around Player)
         if (player.mesh) {

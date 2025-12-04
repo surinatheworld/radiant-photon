@@ -4,17 +4,17 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { rapier, world } from './physics.js';
 
 export class Player {
-    constructor(scene) {
+    constructor(scene, position = { x: 0, y: 5, z: 0 }) {
         this.scene = scene;
         this.mesh = null;
         this.body = null;
         this.mixer = null;
         this.animations = {};
         this.currentAction = null;
-        this.init();
+        this.init(position);
     }
 
-    init() {
+    init(position) {
         // Temporary placeholder
         const geometry = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
         const material = new THREE.MeshStandardMaterial({ color: 0xffff00, transparent: true, opacity: 0.5 });
@@ -73,13 +73,38 @@ export class Player {
                 }
             });
 
+            // Load Attack animation
+            const attackLoader = new FBXLoader();
+            attackLoader.load(`${baseUrl}attack.fbx`, (attackFbx) => {
+                console.log('✅ Attack FBX loaded');
+                if (attackFbx.animations && attackFbx.animations.length > 0) {
+                    const attackAction = this.mixer.clipAction(attackFbx.animations[0]);
+                    attackAction.setLoop(THREE.LoopOnce); // Play only once
+                    attackAction.clampWhenFinished = true; // Stop at last frame
+                    attackAction.timeScale = 0.5; // Slow down to 50% speed (make it longer)
+                    this.animations['Attack'] = attackAction;
+                    console.log('✅ Attack animation added');
+
+                    // Return to Idle/Run after attack finishes
+                    this.mixer.addEventListener('finished', (e) => {
+                        if (e.action === attackAction) {
+                            attackAction.fadeOut(0.2);
+                            this.currentAction = this.animations['Idle']; // Default back to idle
+                            if (this.currentAction) this.currentAction.reset().fadeIn(0.2).play();
+                        }
+                    });
+                }
+            }, undefined, (err) => {
+                console.warn('⚠️ Attack animation file missing (attack.fbx)');
+            });
+
         }, undefined, (error) => {
             console.error('❌ Error loading model:', error);
         });
 
         // Physics
         let rigidBodyDesc = rapier.RigidBodyDesc.dynamic()
-            .setTranslation(0, 5, 0)
+            .setTranslation(position.x, position.y, position.z)
             .setCanSleep(false)
             .lockRotations();
         this.body = world.createRigidBody(rigidBodyDesc);
@@ -103,8 +128,31 @@ export class Player {
 
         this.prevSpace = false;
         this.jumpCooldown = 0;
-        this.maxHookDistance = 80.0;
+        this.maxHookDistance = 200.0; // Max hook range (200m)
         this.prevVelocity = new THREE.Vector3(); // Track previous velocity for wall detection
+
+        // Health Logic
+        this.maxHealth = 100;
+        this.currentHealth = 100;
+        this.healthBar = document.getElementById('player-health-bar');
+        this.updateHealthUI();
+    }
+
+    updateHealthUI() {
+        if (this.healthBar) {
+            const percentage = Math.max(0, (this.currentHealth / this.maxHealth) * 100);
+            this.healthBar.style.width = `${percentage}%`;
+        }
+    }
+
+    takeDamage(damage) {
+        this.currentHealth -= damage;
+        this.updateHealthUI();
+        console.log(`Player hit! Health: ${this.currentHealth}`);
+        if (this.currentHealth <= 0) {
+            console.log("PLAYER DIED");
+            // Handle death (respawn, game over, etc.)
+        }
     }
 
     setupInput() {
@@ -144,10 +192,42 @@ export class Player {
         });
     }
 
+    setTitanTarget(titan) {
+        this.titan = titan;
+    }
+
     attack() {
         const vel = this.body.linvel();
         const speed = Math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2);
         console.log(`Attack! Speed: ${speed.toFixed(2)}`);
+
+        // Play Animation
+        if (this.animations['Attack']) {
+            const action = this.animations['Attack'];
+            if (this.currentAction !== action) {
+                if (this.currentAction) this.currentAction.fadeOut(0.1);
+                this.currentAction = action;
+                action.reset().fadeIn(0.1).play();
+            }
+        }
+
+        // Attack Logic
+        if (this.titan && this.titan.isAlive && this.titan.napeMesh) {
+            // Check distance to Nape
+            const playerPos = this.mesh.position;
+            const napePos = this.titan.napeMesh.getWorldPosition(new THREE.Vector3());
+            const dist = playerPos.distanceTo(napePos);
+
+            // Attack Range: 3 meters
+            if (dist < 3.0) {
+                // Calculate Damage based on Speed
+                // Base damage: 10
+                // Speed bonus: +2 damage per 1 m/s of speed
+                const damage = 10 + (speed * 2.0);
+
+                this.titan.takeDamage(damage);
+            }
+        }
     }
 
     shootHook(side) {
@@ -155,27 +235,32 @@ export class Player {
         if (!this.lastCamDir || !this.lastCamPos) return;
 
         const ray = new rapier.Ray(this.lastCamPos, this.lastCamDir);
-        const hit = world.castRay(ray, this.maxHookDistance, true, 0x00000002);
+        // Cast ray to hit all surfaces (buildings, walls, ground, titan)
+        const hit = world.castRay(ray, this.maxHookDistance, true);
 
-        if (hit) {
-            const hitPoint = ray.pointAt(hit.timeOfImpact);
-            const hook = this.hooks[side];
-            hook.state = 'SHOOTING';
-            hook.target.copy(hitPoint);
-
-            const playerPos = this.mesh.position;
-            const offset = side === 'left' ? -0.5 : 0.5;
-            const waistPos = new THREE.Vector3(offset, 0, 0).applyQuaternion(this.mesh.quaternion).add(playerPos);
-            hook.currentPos.copy(waistPos);
-
-            const geometry = new THREE.BufferGeometry().setFromPoints([hook.currentPos, hook.currentPos]);
-            hook.line = new THREE.Line(geometry, this.ropeMaterial);
-            this.scene.add(hook.line);
-
-            hook.arrow = new THREE.Mesh(this.arrowGeometry, this.arrowMaterial);
-            hook.arrow.position.copy(hook.currentPos);
-            this.scene.add(hook.arrow);
+        if (!hit) {
+            // No hit - cannot shoot hook into air
+            console.log('🚫 Hook needs a surface to attach to!');
+            return;
         }
+
+        const hitPoint = ray.pointAt(hit.timeOfImpact);
+        const hook = this.hooks[side];
+        hook.state = 'SHOOTING';
+        hook.target.copy(hitPoint);
+
+        const playerPos = this.mesh.position;
+        const offset = side === 'left' ? -0.5 : 0.5;
+        const waistPos = new THREE.Vector3(offset, 0, 0).applyQuaternion(this.mesh.quaternion).add(playerPos);
+        hook.currentPos.copy(waistPos);
+
+        const geometry = new THREE.BufferGeometry().setFromPoints([hook.currentPos, hook.currentPos]);
+        hook.line = new THREE.Line(geometry, this.ropeMaterial);
+        this.scene.add(hook.line);
+
+        hook.arrow = new THREE.Mesh(this.arrowGeometry, this.arrowMaterial);
+        hook.arrow.position.copy(hook.currentPos);
+        this.scene.add(hook.arrow);
     }
 
     clearHook(side) {
@@ -203,7 +288,7 @@ export class Player {
         const walkSpeed = 10.0;
         const runSpeed = 25.0;
         const speed = this.keys.shift ? runSpeed : walkSpeed;
-        const jumpForce = 10.0;
+        const jumpForce = 15.0; // Higher jump
         const linvel = this.body.linvel();
 
         // Animation State Machine (AFTER linvel is declared)
@@ -315,6 +400,22 @@ export class Player {
         const playerPos = this.body.translation();
         const playerVec = new THREE.Vector3(playerPos.x, playerPos.y, playerPos.z);
 
+        // Check if both hooks are attached for dual vector logic
+        const leftHook = this.hooks.left;
+        const rightHook = this.hooks.right;
+        const isDualHook = leftHook.state === 'ATTACHED' && rightHook.state === 'ATTACHED';
+
+        // Anti-gravity while swinging (prevent falling when hooked)
+        const isHookedNow = leftHook.state === 'ATTACHED' || rightHook.state === 'ATTACHED' ||
+            leftHook.state === 'SHOOTING' || rightHook.state === 'SHOOTING';
+        if (isHookedNow) {
+            const vel = this.body.linvel();
+            // Reduce gravity effect - keep player floating while hooked
+            if (vel.y < 0) {
+                this.body.setLinvel({ x: vel.x, y: vel.y * 0.8, z: vel.z }, true); // Slow down falling
+            }
+        }
+
         ['left', 'right'].forEach(side => {
             const hook = this.hooks[side];
             if (hook.state === 'SHOOTING') {
@@ -332,6 +433,7 @@ export class Player {
                     hook.currentPos.addScaledVector(dir, travelDist);
                 }
 
+                // Update Visuals
                 const offset = side === 'left' ? -0.5 : 0.5;
                 const waistPos = new THREE.Vector3(offset, 0, 0).applyQuaternion(this.mesh.quaternion).add(playerVec);
                 const positions = hook.line.geometry.attributes.position.array;
@@ -344,6 +446,7 @@ export class Player {
                     hook.arrow.lookAt(hook.target);
                 }
             } else if (hook.state === 'ATTACHED') {
+                // Visual Update
                 const offset = side === 'left' ? -0.5 : 0.5;
                 const waistPos = new THREE.Vector3(offset, 0, 0).applyQuaternion(this.mesh.quaternion).add(playerVec);
                 const positions = hook.line.geometry.attributes.position.array;
@@ -353,18 +456,71 @@ export class Player {
 
                 if (hook.arrow) hook.arrow.position.copy(hook.target);
 
+                // Physics Logic
                 const dist = playerVec.distanceTo(hook.target);
-                const dir = new THREE.Vector3().subVectors(hook.target, playerVec).normalize();
 
+                // Auto-detach / Vault Check
                 if (dist < 3.0) {
+                    // Wall Climb / Vault Logic
+                    // Only climb if airborne AND touching a wall
+                    if (!isGrounded) {
+                        // Check for wall in front
+                        const origin = this.body.translation();
+                        const forwardDir = new THREE.Vector3().subVectors(hook.target, playerVec).normalize();
+                        forwardDir.y = 0; // Keep forward component horizontal
+                        forwardDir.normalize();
+
+                        const ray = new rapier.Ray(origin, { x: forwardDir.x, y: forwardDir.y, z: forwardDir.z });
+                        const hit = world.castRay(ray, 1.5, true, 0xFFFFFFFF); // Check 1.5m in front (ANYTHING)
+
+                        if (hit) {
+                            this.clearHook(side);
+
+                            const vaultForceY = 15.0;
+                            const vaultForceFwd = 10.0;
+
+                            this.body.setLinvel({
+                                x: forwardDir.x * vaultForceFwd,
+                                y: vaultForceY,
+                                z: forwardDir.z * vaultForceFwd
+                            }, true);
+
+                            console.log("🧗 Wall Vault (Contact Confirmed)!");
+                            return;
+                        }
+                    }
+
                     this.clearHook(side);
                     const vel = this.body.linvel();
                     if (vel.y > 0) this.body.setLinvel({ x: vel.x, y: 0, z: vel.z }, true);
                     return;
                 }
 
+                // Apply Force
+                let dir;
+                if (isDualHook) {
+                    // Calculate center vector
+                    const dirLeft = new THREE.Vector3().subVectors(leftHook.target, playerVec).normalize();
+                    const dirRight = new THREE.Vector3().subVectors(rightHook.target, playerVec).normalize();
+                    dir = new THREE.Vector3().addVectors(dirLeft, dirRight).normalize();
+                } else {
+                    dir = new THREE.Vector3().subVectors(hook.target, playerVec).normalize();
+                }
+
+                // Add upward boost when target is above player (helps climb onto roofs)
+                const heightDiff = hook.target.y - playerVec.y;
+                let upwardBoost = 0;
+                if (heightDiff > 2) {
+                    // Target is above - add extra upward force to arc over walls
+                    upwardBoost = Math.min(heightDiff * 0.5, 10); // Cap at 10
+                }
+
                 const reelForce = 120.0;
-                this.body.applyImpulse({ x: dir.x * reelForce * dt, y: dir.y * reelForce * dt, z: dir.z * reelForce * dt }, true);
+                this.body.applyImpulse({
+                    x: dir.x * reelForce * dt,
+                    y: dir.y * reelForce * dt + upwardBoost * dt,
+                    z: dir.z * reelForce * dt
+                }, true);
             }
         });
 

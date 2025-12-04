@@ -19,3 +19,68 @@ body {
 canvas {
   display: block;
 }
+
+/* UI Overlay */
+#ui-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* Titan Health Bar (Floating) */
+#titan-health-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(-50%, -100%);
+  /* Center above point */
+  width: 200px;
+  text-align: center;
+  display: none;
+  /* Hidden until positioned */
+}
+
+#titan-health-bar {
+  width: 100%;
+  height: 100%;
+  background-color: #ff0000;
+  transition: width 0.2s ease-out;
+}
+
+/* Player Health Bar */
+#player-health-container {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  width: 300px;
+}
+
+#player-health-bar {
+  width: 100%;
+  height: 100%;
+  background-color: #00ff00;
+  transition: width 0.2s ease-out;
+}
+
+/* Common Health Bar Styles */
+.health-label {
+  color: white;
+  font-family: 'Arial', sans-serif;
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 5px;
+  text-shadow: 1px 1px 2px black;
+}
+
+.health-bar-bg {
+  width: 100%;
+  height: 20px;
+  background-color: rgba(0, 0, 0, 0.5);
+  border: 2px solid white;
+  border-radius: 4px;
+  overflow: hidden;
+}
